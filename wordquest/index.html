@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WordQuest: English Empire</title>
+<style>
+  :root {
+    --bg: #0f0c29; --panel: #1b1640; --panel2: #241d55; --accent: #ffd166;
+    --accent2: #06d6a0; --danger: #ef476f; --text: #f5f3ff; --muted: #a9a3d6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: radial-gradient(circle at top, #302b63, var(--bg) 70%);
+    color: var(--text); min-height: 100vh;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between;
+    padding: 14px 20px; background: rgba(0,0,0,0.25); position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 1.2rem; margin: 0; color: var(--accent); }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.9rem; }
+  .stat b { color: var(--accent2); }
+  main { max-width: 900px; margin: 0 auto; padding: 20px; }
+  .card {
+    background: var(--panel); border-radius: 16px; padding: 20px; margin-bottom: 18px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+  button {
+    font: inherit; cursor: pointer; border: none; border-radius: 12px; padding: 12px 16px;
+    background: var(--accent); color: #1b1640; font-weight: 700; transition: transform .1s;
+  }
+  button:hover { transform: translateY(-1px); }
+  button.ghost { background: var(--panel2); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; transform: none; }
+  .game-tile { text-align: left; background: var(--panel2); color: var(--text); }
+  .game-tile small { display: block; color: var(--muted); font-weight: 400; margin-top: 4px; }
+  .bar { height: 12px; background: var(--panel2); border-radius: 99px; overflow: hidden; margin: 6px 0 12px; }
+  .bar > div { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width .4s; }
+  .opts { display: grid; gap: 10px; margin-top: 12px; }
+  .opts button { background: var(--panel2); color: var(--text); text-align: left; font-weight: 500; }
+  .opts button.right { background: var(--accent2); color: #062; }
+  .opts button.wrong { background: var(--danger); color: #fff; }
+  .feedback { margin-top: 14px; padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.06); line-height: 1.5; }
+  .passage { font-size: 1.1rem; line-height: 2; }
+  .passage span { cursor: pointer; padding: 1px 3px; border-radius: 6px; }
+  .passage span:hover { background: rgba(255,255,255,0.12); }
+  .passage span.hit { background: var(--accent2); color: #062; font-weight: 700; }
+  .passage span.miss { background: var(--danger); color: #fff; }
+  textarea, input[type=text] {
+    width: 100%; font: inherit; padding: 12px; border-radius: 10px; border: 2px solid var(--panel2);
+    background: #120e2e; color: var(--text); min-height: 120px; resize: vertical;
+  }
+  input[type=text] { min-height: auto; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .chip { padding: 6px 10px; border-radius: 99px; background: var(--panel2); font-size: .85rem; }
+  .chip.got { background: var(--accent2); color: #062; }
+  .timer { font-size: 1.6rem; font-weight: 800; color: var(--accent); }
+  .big { font-size: 2.2rem; font-weight: 800; color: var(--accent); }
+  .muted { color: var(--muted); }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #1b1640; padding: 10px 18px; border-radius: 99px;
+    font-weight: 700; opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚔️ WordQuest: English Empire</h1>
+  <div class="stats">
+    <span class="stat">Rank: <b id="rank">Keyword Rookie</b></span>
+    <span class="stat">XP: <b id="xp">0</b></span>
+    <span class="stat">🔥 Streak: <b id="streak">0</b></span>
+    <span class="stat">🎨 Creativity: <b id="creativity">0</b>/100</span>
+  </div>
+</header>
+
+<main id="app"></main>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------- STATE & PROGRESS ----------
+const RANKS = [
+  { min: 0, name: "Keyword Rookie" },
+  { min: 1000, name: "Answer Architect" },
+  { min: 3500, name: "Literature Legend" },
+  { min: 6500, name: "Final Boss Contender" },
+  { min: 8000, name: "English God – 100/100" },
+];
+const KEY = "wordquest-state-v1";
+let state = JSON.parse(localStorage.getItem(KEY) || "null") || {
+  xp: 0, creativity: 0, streak: 0, lastDay: null, badges: [], caughtKeywords: []
+};
+
+function save() { localStorage.setItem(KEY, JSON.stringify(state)); renderHeader(); }
+
+function touchStreak() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (state.lastDay === today) return;
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  state.streak = state.lastDay === yesterday ? state.streak + 1 : 1;
+  state.lastDay = today;
+}
+
+function rankName() {
+  let r = RANKS[0].name;
+  for (const rk of RANKS) if (state.xp >= rk.min) r = rk.name;
+  return r;
+}
+
+function addXP(n, msg) {
+  state.xp += n;
+  if (state.creativity < 100 && n >= 20) state.creativity = Math.min(100, state.creativity + 2);
+  save();
+  if (msg) toast(`+${n} XP · ${msg}`);
+}
+
+function badge(name) {
+  if (!state.badges.includes(name)) {
+    state.badges.push(name);
+    save();
+    toast(`🏅 Badge unlocked: ${name}`);
+  }
+}
+
+function toast(text) {
+  const t = document.getElementById("toast");
+  t.textContent = text; t.classList.add("show");
+  clearTimeout(window._toastT);
+  window._toastT = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function renderHeader() {
+  document.getElementById("rank").textContent = rankName();
+  document.getElementById("xp").textContent = state.xp;
+  document.getElementById("streak").textContent = state.streak;
+  document.getElementById("creativity").textContent = state.creativity;
+}
+
+// ---------- NAVIGATION ----------
+const app = document.getElementById("app");
+const GAMES = {
+  sniper: { title: "🎯 Keyword Sniper", render: gameSniper },
+  collector: { title: "🧺 Value Point Collector", render: gameCollector },
+  architect: { title: "🏗️ Answer Architect (3-mark)", render: gameArchitect },
+  mind: { title: "🧠 Character Mind Reader", render: gameMind },
+  irony: { title: "🎭 Irony & Humour Detector", render: gameIrony },
+  poem: { title: "📜 Poetry Decoder Lab: Dust of Snow", render: gamePoem },
+};
+
+function home() {
+  touchStreak(); save();
+  app.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="muted">Mission: 100/100 in Class 10 English (184)</div>
+          <div class="big">Module 1: A Letter to God</div>
+        </div>
+        <div class="muted">Next rank at ${nextRankXP()} XP</div>
+      </div>
+      <div class="bar"><div style="width:${progressToNext()}%"></div></div>
+      <p class="muted">Pick a game. Every answer earns XP, and every keyword you catch trains your examiner's eye.</p>
+    </div>
+    <div class="grid">
+      ${Object.entries(GAMES).map(([id, g]) => `
+        <button class="game-tile" onclick="openGame('${id}')">
+          ${g.title}
+          <small>${({
+            sniper: "Snipe exam keywords in 45 seconds",
+            collector: "List value points before you write",
+            architect: "Build a structured answer; get an AQS score",
+            mind: "Predict what Lencho is thinking",
+            irony: "Spot the irony in the story",
+            poem: "Unlock the secret of a poem",
+          })[id]}</small>
+        </button>`).join("")}
+    </div>
+    <div class="card" style="margin-top:18px">
+      <h3>🏅 Badges</h3>
+      <div class="chips">${state.badges.length ? state.badges.map(b => `<span class="chip got">${b}</span>`).join("") : '<span class="muted">None yet. Win a game to earn one!</span>'}</div>
+      <p class="muted" style="margin-top:14px">Keyword Hunter: ${state.caughtKeywords.length} keywords caught.</p>
+      <button class="ghost" onclick="resetProgress()">Reset progress</button>
+    </div>`;
+}
+
+function nextRankXP() {
+  for (const rk of RANKS) if (state.xp < rk.min) return rk.min;
+  return "MAX";
+}
+function progressToNext() {
+  const next = RANKS.find(r => r.min > state.xp);
+  if (!next) return 100;
+  const prev = [...RANKS].reverse().find(r => r.min <= state.xp);
+  return Math.round(((state.xp - prev.min) / (next.min - prev.min)) * 100);
+}
+
+function openGame(id) { GAMES[id].render(); window.scrollTo(0, 0); }
+function back(html, title) {
+  return `<div class="card"><div class="row"><h2>${title}</h2><button class="ghost" onclick="home()">← Back to quests</button></div>${html}</div>`;
+}
+function resetProgress() {
+  if (!confirm("Reset all XP, badges and streaks?")) return;
+  state = { xp: 0, creativity: 0, streak: 0, lastDay: null, badges: [], caughtKeywords: [] };
+  save(); home();
+}
+
+// ---------- GAME 1: KEYWORD SNIPER ----------
+const SNIPER_TEXT = `In a remote village, a hailstorm flattened the fields of Lencho, a poor farmer.
+In one afternoon, his crops were ruined, and his family faced hunger. Lencho had only one hope left:
+his faith in God. He wrote a letter asking God for money to sow his fields again. When the postmaster
+and his friends read the letter, they were moved by its faith and decided to help him with their own money.`;
+const SNIPER_KEYS = ["hailstorm", "crops", "poor", "hope", "faith", "letter", "postmaster", "money"];
+
+function gameSniper() {
+  let timeLeft = 45, hits = 0, misses = 0, timer = null, finished = false;
+  const words = SNIPER_TEXT.split(/(\s+)/);
+  const found = new Set();
+  const html = `
+    <div class="row"><span class="timer" id="t">45s</span><span>🎯 <b id="h">0</b> caught · ❌ <b id="m">0</b> missed</span></div>
+    <p class="muted">Tap every EXAM KEYWORD in the passage. Miss one and you lose 10 XP.</p>
+    <div class="card passage" id="p" style="background:var(--panel2)">
+      ${words.map(w => /^\s+$/.test(w) ? w : `<span data-w="${w.toLowerCase().replace(/[^a-z]/g, "")}">${w}</span>`).join("")}
+    </div>
+    <div id="res"></div>`;
+  app.innerHTML = back(html, GAMES.sniper.title);
+
+  document.querySelectorAll("#p span").forEach(sp => sp.addEventListener("click", () => {
+    if (finished || sp.classList.contains("hit") || sp.classList.contains("miss")) return;
+    const w = sp.dataset.w;
+    if (SNIPER_KEYS.includes(w)) {
+      sp.classList.add("hit"); hits++; found.add(w);
+      document.getElementById("h").textContent = hits;
+      if (!state.caughtKeywords.includes(w)) { state.caughtKeywords.push(w); save(); }
+    } else {
+      sp.classList.add("miss"); misses++; state.xp = Math.max(0, state.xp - 10);
+      document.getElementById("m").textContent = misses; save();
+    }
+    if (hits === SNIPER_KEYS.length) finish();
+  }));
+
+  function tick() {
+    timeLeft--;
+    document.getElementById("t").textContent = timeLeft + "s";
+    if (timeLeft <= 0) finish();
+  }
+  timer = setInterval(tick, 1000);
+
+  function finish() {
+    if (finished) return;
+    finished = true; clearInterval(timer);
+    const missedKeys = SNIPER_KEYS.filter(k => !found.has(k));
+    const xp = hits * 5;
+    addXP(xp, `${hits}/${SNIPER_KEYS.length} keywords`);
+    if (hits === SNIPER_KEYS.length) badge("Sniper Eye");
+    document.getElementById("res").innerHTML = `
+      <div class="feedback">
+        <b>Round over.</b> You caught ${hits}/${SNIPER_KEYS.length} keywords.<br>
+        ${missedKeys.length ? `🔴 Missed: <b>${missedKeys.join(", ")}</b>. Examiners reward these words.` : "🟢 Perfect snipe! Every keyword locked in."}
+        <br><br><i>Boss Tip: "faith" and "hope" are the value-point words in this story.</i>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button onclick="gameSniper()">Play again</button>
+      </div>`;
+  }
+}
+
+// ---------- GAME 2: VALUE POINT COLLECTOR ----------
+const COLLECTOR = {
+  question: "What does the story teach us about faith and human kindness?",
+  points: [
+    { label: "Faith gives hope in hard times", re: /faith|hope|trust in god|believ/i },
+    { label: "Kindness can answer a prayer (postmaster and friends help)", re: /kind|help|postmaster|generous|friends/i },
+    { label: "Blind trust can ignore practical responsibility", re: /blind|without work|practical|responsib|effort/i },
+    { label: "Honesty and trust between people matter", re: /honest|trust|thie|steal|stole|cheat/i },
+  ],
+};
+
+function gameCollector() {
+  const got = new Set();
+  const html = `
+    <p><b>Question:</b> ${COLLECTOR.question}</p>
+    <p class="muted">Type a value point in your own words, then press Collect. Target: all 4 points.</p>
+    <div class="row">
+      <input type="text" id="vp" placeholder="e.g., faith gives people hope when things are hard" style="flex:1" />
+      <button onclick="collectPoint()">Collect 🧺</button>
+    </div>
+    <div class="chips" id="chips">
+      ${COLLECTOR.points.map((p, i) => `<span class="chip" id="c${i}">Point ${i + 1} ?</span>`).join("")}
+    </div>
+    <div id="res"></div>`;
+  app.innerHTML = back(html, GAMES.collector.title);
+  window.collectPoint = function () {
+    const inp = document.getElementById("vp");
+    const v = inp.value.trim();
+    if (!v) return;
+    let matched = false;
+    COLLECTOR.points.forEach((p, i) => {
+      if (!got.has(i) && p.re.test(v)) {
+        got.add(i); matched = true;
+        const chip = document.getElementById("c" + i);
+        chip.className = "chip got"; chip.textContent = "✔ " + p.label;
+      }
+    });
+    if (matched) toast("Value point collected!"); else toast("Not a new value point. Try again!");
+    inp.value = "";
+    if (got.size === COLLECTOR.points.length) {
+      addXP(40, "Full haul!"); badge("Value Hunter");
+      document.getElementById("res").innerHTML = `<div class="feedback">🏆 All 4 value points collected! Now write them into a 3-mark answer in Answer Architect.</div>`;
+    }
+  };
+}
+
+// ---------- GAME 3: ANSWER ARCHITECT ----------
+const ARCH = {
+  question: "Why did Lencho write to God? (3 marks)",
+  points: [
+    { label: "Hailstorm destroyed his crops / only source of income", re: /hail|crop|ruin|destroy|income|livelihood|field/i },
+    { label: "Deep faith in God", re: /faith|believ|trust/i },
+    { label: "No other human help available", re: /no one|nobody|only|no other|alone|hope/i },
+  ],
+  model: "Lencho, a poor farmer, lost his entire crop in a hailstorm, which was his only source of income. Having deep faith in God, he believed God alone could help him, so he wrote asking for money to sow again. This shows that his faith was his only hope in a time of great need.",
+};
+
+function gameArchitect() {
+  const html = `
+    <p><b>${ARCH.question}</b></p>
+    <div class="opts" style="margin-top:0">
+      <p class="muted" style="margin:0">Structure: Intro → Value Points → Explanation → Conclusion. Aim for 40–70 words.</p>
+    </div>
+    <textarea id="ans" placeholder="Write your answer here..."></textarea>
+    <div class="row" style="margin-top:10px">
+      <span class="muted" id="wc">0 words</span>
+      <button onclick="scoreArch()">Score my answer ⚡</button>
+    </div>
+    <div id="res"></div>`;
+  app.innerHTML = back(html, GAMES.architect.title);
+  document.getElementById("ans").addEventListener("input", e => {
+    document.getElementById("wc").textContent = (e.target.value.trim().split(/\s+/).filter(Boolean).length) + " words";
+  });
+  window.scoreArch = function () {
+    const text = document.getElementById("ans").value.trim();
+    const wc = text.split(/\s+/).filter(Boolean).length;
+    if (wc < 10) { toast("Write a little more first!"); return; }
+    const hits = ARCH.points.map(p => p.re.test(text));
+    const valueScore = Math.round((hits.filter(Boolean).length / ARCH.points.length) * 35);
+    const structure = /\b(lencho|farmer)\b/i.test(text) && /\b(thus|therefore|this shows|hence|so|in conclusion|overall)\b/i.test(text) ? 15 : 7;
+    const lengthOk = wc >= 30 && wc <= 90;
+    const language = lengthOk ? 10 : 5;
+    const evidence = /\b(hail|faith|crop|letter)/i.test(text) ? 20 : 8;
+    const keywords = /\b(faith|hope|hailstorm|crop)/i.test(text) ? 15 : 6;
+    const total = valueScore + structure + language + evidence + keywords;
+    const parts = ARCH.points.map((p, i) => `${hits[i] ? "🟢" : "🔴"} ${p.label}`).join("<br>");
+    if (total >= 70) { addXP(Math.round(total / 2), "AQS " + total); badge("Answer Architect"); }
+    else addXP(10, "Good try");
+    document.getElementById("res").innerHTML = `
+      <div class="feedback">
+        <div class="big">AQS: ${total}/100</div>
+        <div class="bar"><div style="width:${total}%"></div></div>
+        ${parts}<br><br>
+        <b>Structure:</b> ${structure}/15 · <b>Evidence:</b> ${evidence}/20 · <b>Keywords:</b> ${keywords}/15 · <b>Language:</b> ${language}/10 · <b>Value points:</b> ${valueScore}/35
+        <br><br><b>📘 Model answer:</b><br><i>${ARCH.model}</i>
+      </div>`;
+  };
+}
+
+// ---------- GAME 4: CHARACTER MIND READER (MCQ) ----------
+const MIND_QS = [
+  { q: "Lencho receives 70 pesos instead of the 100 he asked for. What is his first reaction in the story?",
+    o: ["He gives up on God", "He thanks God but complains about the money that went missing", "He returns the money", "He asks the postmaster for a loan"],
+    a: 1, why: "Lencho thanks God for the help, but his anger goes to the people he thinks took 30 pesos. His faith never breaks." },
+  { q: "Why does Lencho write to God instead of asking his neighbours?",
+    o: ["He is too proud", "He believes God alone can help him in his deep need", "He cannot write", "The post office forces him"],
+    a: 1, why: "His faith is his only hope, and he has no other source of help. This is the core of his character." },
+  { q: "What does the postmaster's decision to help reveal about his character?",
+    o: ["He is greedy", "He is moved by faith and kindness", "He wants to write a story", "He wants to be famous"],
+    a: 1, why: "The postmaster and his friends are moved by Lencho's faith and help him with their own money." },
+];
+function gameMind() {
+  let i = 0, score = 0;
+  const show = () => {
+    const q = MIND_QS[i];
+    app.innerHTML = back(`
+      <p class="muted">Question ${i + 1}/${MIND_QS.length} · Predict the character's thoughts</p>
+      <p style="font-size:1.1rem"><b>${q.q}</b></p>
+      <div class="opts">${q.o.map((o, k) => `<button onclick="pickMind(${k})">${o}</button>`).join("")}</div>
+      <div id="fb"></div>`, GAMES.mind.title);
+  };
+  window.pickMind = function (k) {
+    const q = MIND_QS[i];
+    const btns = document.querySelectorAll(".opts button");
+    btns.forEach((b, j) => { b.disabled = true; if (j === q.a) b.classList.add("right"); else if (j === k) b.classList.add("wrong"); });
+    if (k === q.a) score++;
+    document.getElementById("fb").innerHTML = `<div class="feedback">${k === q.a ? "🧠 Mind read!" : "❌ Not quite."} ${q.why}</div>
+      <div class="row" style="margin-top:12px"><button onclick="nextMind()">${i < MIND_QS.length - 1 ? "Next →" : "See results"}</button></div>`;
+  };
+  window.nextMind = function () {
+    i++;
+    if (i < MIND_QS.length) return show();
+    addXP(score * 25, `Mind Reader ${score}/${MIND_QS.length}`);
+    if (score === MIND_QS.length) badge("Mind Reader");
+    app.innerHTML = back(`<div class="feedback"><div class="big">${score}/${MIND_QS.length} correct</div>Great minds predict the "why" behind every action. Try again to sharpen your reading.</div>
+      <div class="row" style="margin-top:12px"><button onclick="gameMind()">Replay</button></div>`, GAMES.mind.title);
+  };
+  show();
+}
+
+// ---------- GAME 5: IRONY & HUMOUR DETECTOR ----------
+const IRONY_QS = [
+  { q: "Lencho thanks God for the money that actually came from the postmaster and friends. What kind of irony is this?",
+    o: ["Verbal irony", "Situational irony: God's answer came through human hands", "Dramatic irony only", "No irony"],
+    a: 1, why: "The reader expects a divine miracle; the help comes from ordinary people. That gap is situational irony." },
+  { q: "Lencho blames the post office for taking 30 pesos, yet he trusts God completely. This contrast shows:",
+    o: ["Lencho's humour", "A gentle satire on blind faith that ignores practical reality", "A scientific fact", "Nothing"],
+    a: 1, why: "The story gently mocks the gap between trusting God and noticing human dishonesty." },
+];
+function gameIrony() {
+  let i = 0, score = 0;
+  const show = () => {
+    const q = IRONY_QS[i];
+    app.innerHTML = back(`
+      <p class="muted">Question ${i + 1}/${IRONY_QS.length}</p>
+      <p style="font-size:1.1rem"><b>${q.q}</b></p>
+      <div class="opts">${q.o.map((o, k) => `<button onclick="pickIrony(${k})">${o}</button>`).join("")}</div>
+      <div id="fb"></div>`, GAMES.irony.title);
+  };
+  window.pickIrony = function (k) {
+    const q = IRONY_QS[i];
+    document.querySelectorAll(".opts button").forEach((b, j) => { b.disabled = true; if (j === q.a) b.classList.add("right"); else if (j === k) b.classList.add("wrong"); });
+    if (k === q.a) score++;
+    document.getElementById("fb").innerHTML = `<div class="feedback">${q.why}</div>
+      <div class="row" style="margin-top:12px"><button onclick="nextIrony()">${i < IRONY_QS.length - 1 ? "Next →" : "Finish"}</button></div>`;
+  };
+  window.nextIrony = function () {
+    i++;
+    if (i < IRONY_QS.length) return show();
+    addXP(score * 30, `Irony ${score}/${IRONY_QS.length}`);
+    if (score === IRONY_QS.length) badge("Irony Spotter");
+    app.innerHTML = back(`<div class="feedback"><div class="big">${score}/${IRONY_QS.length} irony hits</div>Irony is the examiner's favourite trap. Spot the gap between what is expected and what happens.</div>
+      <div class="row" style="margin-top:12px"><button onclick="gameIrony()">Replay</button></div>`, GAMES.irony.title);
+  };
+  show();
+}
+
+// ---------- GAME 6: POETRY DECODER – DUST OF SNOW ----------
+const POEM_QS = [
+  { q: "'The way a crow / Shook down on me / The dust of snow / From a hemlock tree.' Which device is used in 'shook down'?",
+    o: ["Simile", "Visual imagery: a vivid picture of the crow shaking snow", "Alliteration only", "Rhyming couplet"],
+    a: 1, why: "The poem paints a sensory picture of the crow shaking snow down. That is vivid visual imagery." },
+  { q: "What is the 'secret message' of the poem?",
+    o: ["Crows are dangerous", "A small natural moment can change a person's mood and save a day", "Snow must be cleared", "Winter is too long"],
+    a: 1, why: "The speaker says the crow 'has given my heart / A change of mood', so a tiny event lifts the spirit." },
+  { q: "What tone does the poem create?",
+    o: ["Angry and violent", "Light, playful and relieved", "Sad and grieving", "Fearful"],
+    a: 1, why: "The mood shift and the image of falling snow create a light, refreshing tone." },
+];
+function gamePoem() {
+  let i = 0, score = 0;
+  const show = () => {
+    const q = POEM_QS[i];
+    app.innerHTML = back(`
+      <p class="muted">Dust of Snow by Robert Frost · Unlock ${i + 1}/${POEM_QS.length}</p>
+      <div class="card passage" style="background:var(--panel2); font-size:1rem">
+        The way a crow<br>Shook down on me<br>The dust of snow<br>From a hemlock tree.
+      </div>
+      <p style="font-size:1.1rem"><b>${q.q}</b></p>
+      <div class="opts">${q.o.map((o, k) => `<button onclick="pickPoem(${k})">${o}</button>`).join("")}</div>
+      <div id="fb"></div>`, GAMES.poem.title);
+  };
+  window.pickPoem = function (k) {
+    const q = POEM_QS[i];
+    document.querySelectorAll(".opts button").forEach((b, j) => { b.disabled = true; if (j === q.a) b.classList.add("right"); else if (j === k) b.classList.add("wrong"); });
+    if (k === q.a) score++;
+    document.getElementById("fb").innerHTML = `<div class="feedback">${q.why}</div>
+      <div class="row" style="margin-top:12px"><button onclick="nextPoem()">${i < POEM_QS.length - 1 ? "Next →" : "Finish"}</button></div>`;
+  };
+  window.nextPoem = function () {
+    i++;
+    if (i < POEM_QS.length) return show();
+    addXP(score * 20, `Poem ${score}/${POEM_QS.length}`);
+    if (score === POEM_QS.length) badge("Poem Decoder");
+    app.innerHTML = back(`<div class="feedback"><div class="big">${score}/${POEM_QS.length} unlocked</div>Every poem hides a secret. Keep decoding the images, tone and message.</div>
+      <div class="row" style="margin-top:12px"><button onclick="gamePoem()">Replay</button></div>`, GAMES.poem.title);
+  };
+  show();
+}
+
+// ---------- BOOT ----------
+renderHeader();
+home();
+</script>
+</body>
+</html>
